@@ -11,3 +11,6 @@ wheels/
 
 # Persistent browser profile (cookies/session for Google)
 .browser_profile
+
+Report/
+Report_eecglobal/
