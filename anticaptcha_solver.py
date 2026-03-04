@@ -129,18 +129,81 @@ def _fetch_task_result_raw(api_key: str, task_id: int) -> dict | None:
         return None
 
 
-def _solve_with_timeout(solver, task_payload: dict) -> str | None:
-    """Create task and wait with our custom timeout instead of the SDK default 300s."""
-    if solver.create_task(task_payload) != 1:
-        solver.log("could not create task")
-        solver.log(solver.err_string)
+ANTICAPTCHA_API_URL = "https://api.anti-captcha.com"
+_REQUEST_TIMEOUT = 12  # seconds per individual HTTP call (short to catch dropped packets fast)
+
+
+def _ac_post(endpoint: str, payload: dict) -> dict:
+    """POST to Anti-Captcha API with explicit timeout and retries for flaky networks."""
+    import requests
+    url = f"{ANTICAPTCHA_API_URL}/{endpoint}"
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            r = requests.post(
+                url,
+                json=payload,
+                timeout=_REQUEST_TIMEOUT,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            time.sleep(1)  # brief pause before retry
+    raise last_err
+
+
+def _create_task(api_key: str, task: dict) -> int | None:
+    """Submit a task to Anti-Captcha. Returns task_id on success, None on failure."""
+    log = logging.getLogger("google_clicker")
+    try:
+        resp = _ac_post("createTask", {"clientKey": api_key, "task": task})
+        if resp.get("errorId", 1) != 0:
+            log.error("[Anti-Captcha] createTask error — %s: %s",
+                      resp.get("errorCode", "?"), resp.get("errorDescription", "?"))
+            return None
+        task_id = resp.get("taskId")
+        log.info("[Anti-Captcha] Task created (id=%s). Waiting up to %ds...",
+                 task_id, ANTICAPTCHA_SOLVE_TIMEOUT_SEC)
+        return task_id
+    except Exception as e:
+        log.error("[Anti-Captcha] createTask request failed: %s", e)
         return None
-    solver.log("created task with id " + str(solver.task_id))
-    time.sleep(3)
-    task_result = solver.wait_for_result(ANTICAPTCHA_SOLVE_TIMEOUT_SEC)
-    if task_result == 0:
-        return None
-    return task_result["solution"]["gRecaptchaResponse"]
+
+
+def _poll_task(api_key: str, task_id: int, timeout_sec: int = ANTICAPTCHA_SOLVE_TIMEOUT_SEC) -> str | None:
+    """Poll getTaskResult until solved, failed, or timed out. Returns gRecaptchaResponse token."""
+    log = logging.getLogger("google_clicker")
+    deadline = time.monotonic() + timeout_sec
+    time.sleep(3)  # recommended initial wait before first poll
+    poll_interval = 5
+
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        try:
+            resp = _ac_post("getTaskResult", {"clientKey": api_key, "taskId": task_id})
+        except Exception as e:
+            log.warning("[Anti-Captcha] getTaskResult request failed: %s", e)
+            continue
+
+        if resp.get("errorId", 0) != 0:
+            log.error("[Anti-Captcha] Task error — %s: %s",
+                      resp.get("errorCode", "?"), resp.get("errorDescription", "?"))
+            return None
+
+        status = resp.get("status", "")
+        if status == "ready":
+            token = (resp.get("solution") or {}).get("gRecaptchaResponse")
+            if token:
+                log.info("[Anti-Captcha] Token received.")
+                return token
+            log.error("[Anti-Captcha] Status ready but no token in solution.")
+            return None
+        # status == "processing" — keep waiting
+
+    log.error("[Anti-Captcha] Timed out after %ds waiting for task %s.", timeout_sec, task_id)
+    return None
 
 
 def _get_token_from_anticaptcha(
@@ -150,65 +213,41 @@ def _get_token_from_anticaptcha(
     enterprise_payload: dict | None = None,
     data_s: str | None = None,
 ) -> tuple[str | None, Any]:
-    """Get gRecaptchaResponse token from Anti-Captcha. Returns (token, last_solver)."""
-    last_solver = None
+    """Get gRecaptchaResponse token from Anti-Captcha REST API. Returns (token, None)."""
+    log = logging.getLogger("google_clicker")
+
     # Try RecaptchaV2Enterprise first (recommended for Google)
-    try:
-        from anticaptchaofficial.recaptchav2enterpriseproxyless import recaptchaV2EnterpriseProxyless
-        solver = recaptchaV2EnterpriseProxyless()
-        solver.set_verbose(0)
-        solver.set_key(api_key)
-        solver.set_website_url(website_url)
-        solver.set_website_key(website_key)
-        if enterprise_payload:
-            solver.set_enterprise_payload(enterprise_payload)
-        last_solver = solver
-        task_payload = {
-            "clientKey": solver.client_key,
-            "task": {
-                "type": "RecaptchaV2EnterpriseTaskProxyless",
-                "websiteURL": website_url,
-                "websiteKey": website_key,
-                "enterprisePayload": enterprise_payload,
-            },
-            "softId": solver.soft_id,
-        }
-        token = _solve_with_timeout(solver, task_payload)
-        if token:
-            return (token, solver)
-    except Exception as e:
-        logging.getLogger("google_clicker").debug("[Anti-Captcha] Enterprise solver exception: %s", e)
+    enterprise_task: dict = {
+        "type": "RecaptchaV2EnterpriseTaskProxyless",
+        "websiteURL": website_url,
+        "websiteKey": website_key,
+    }
+    if enterprise_payload:
+        enterprise_task["enterprisePayload"] = enterprise_payload
 
-    # Fallback: RecaptchaV2 (non-Enterprise) with data-s for Google
-    try:
-        from anticaptchaofficial.recaptchav2proxyless import recaptchaV2Proxyless
-        solver = recaptchaV2Proxyless()
-        solver.set_verbose(0)
-        solver.set_key(api_key)
-        solver.set_website_url(website_url)
-        solver.set_website_key(website_key)
-        if data_s:
-            solver.set_data_s(data_s)
-        last_solver = solver
-        task_data = {
-            "type": "RecaptchaV2TaskProxyless",
-            "websiteURL": website_url,
-            "websiteKey": website_key,
-        }
-        if data_s:
-            task_data["recaptchaDataSValue"] = data_s
-        task_payload = {
-            "clientKey": solver.client_key,
-            "task": task_data,
-            "softId": solver.soft_id,
-        }
-        token = _solve_with_timeout(solver, task_payload)
+    task_id = _create_task(api_key, enterprise_task)
+    if task_id is not None:
+        token = _poll_task(api_key, task_id)
         if token:
-            return (token, solver)
-    except Exception as e:
-        logging.getLogger("google_clicker").debug("[Anti-Captcha] V2 proxyless solver exception: %s", e)
+            return (token, None)
+        log.warning("[Anti-Captcha] Enterprise task failed. Trying V2 fallback...")
 
-    return (None, last_solver)
+    # Fallback: RecaptchaV2 proxyless with optional data-s
+    v2_task: dict = {
+        "type": "RecaptchaV2TaskProxyless",
+        "websiteURL": website_url,
+        "websiteKey": website_key,
+    }
+    if data_s:
+        v2_task["recaptchaDataSValue"] = data_s
+
+    task_id = _create_task(api_key, v2_task)
+    if task_id is not None:
+        token = _poll_task(api_key, task_id)
+        if token:
+            return (token, None)
+
+    return (None, None)
 
 
 def _inject_token_and_submit(page, token: str) -> bool:

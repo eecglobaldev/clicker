@@ -36,12 +36,20 @@ from anticaptcha_solver import solve_google_recaptcha
 _shutdown_event = threading.Event()
 
 
-def _signal_handler(signum, frame):
-    """Handle SIGINT/SIGTERM: instantly unblocks all interruptible_sleep() calls."""
-    logging.getLogger("google_clicker").info(
-        "Shutdown requested (signal %d). Workers will stop after current keyword...", signum
-    )
+def _signal_handler(signum=None, frame=None):
+    """Handle SIGINT/SIGTERM: kill browsers and force-stop immediately."""
+    print("\nCtrl+C received — killing browsers and stopping...", flush=True)
     _shutdown_event.set()
+    import psutil
+    curr_proc = psutil.Process()
+    for child in curr_proc.children(recursive=True):
+        try:
+            name = child.name().lower()
+            if "chrome" in name or "chromium" in name or "node" in name:
+                child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    os._exit(1)
 
 
 def _shutdown_requested() -> bool:
@@ -1091,11 +1099,20 @@ def main() -> None:
     for t in threads:
         t.start()
 
-    for t in threads:
-        t.join()
+    # Wait for threads to finish, using a timeout so the main thread
+    # can wake up to process SIGINT/SIGTERM handlers properly.
+    try:
+        while any(t.is_alive() for t in threads):
+            if _shutdown_requested():
+                break
+            for t in threads:
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        _signal_handler()
 
-    logger.info("Done. All workers finished.")
-    move_result_log_to_archive()
+    if not _shutdown_requested():
+        logger.info("Done. All workers finished.")
+        move_result_log_to_archive()
 
 
 if __name__ == "__main__":

@@ -18,10 +18,21 @@ RESTART_DELAY="${RESTART_DELAY:-10}"
 # Max runtime per run (5 hours); script is restarted after this even if still running
 RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-18000}"
 
-# Handle Ctrl+C and termination signals gracefully
+# Handle Ctrl+C and termination signals gracefully by killing the whole process group
 SHOULD_STOP=0
 
-trap 'echo "[$(date -Iseconds)] Stopping..."; SHOULD_STOP=1; exit 0' INT TERM EXIT
+_cleanup() {
+  echo "[$(date -Iseconds)] Stopping... (killing all processes)"
+  SHOULD_STOP=1
+  trap '' INT TERM EXIT  # Prevent recursive trapping
+  # Kill the entire process group attached to this script
+  if [[ -n "$MAIN_PID" ]]; then
+    kill -TERM -$MAIN_PID 2>/dev/null || true
+  fi
+  kill -TERM -$$ 2>/dev/null || true
+  exit 0
+}
+trap _cleanup INT TERM
 
 while true; do
   if [[ "$SHOULD_STOP" -eq 1 ]]; then
@@ -33,7 +44,7 @@ while true; do
 
   # Run with timeout; preserve exit code properly
   set +e
-  timeout --signal=INT "$RUN_TIMEOUT_SEC" uv run main.py
+  timeout --foreground --signal=INT "$RUN_TIMEOUT_SEC" uv run main.py
   EXIT_CODE=$?
   set -e
 
