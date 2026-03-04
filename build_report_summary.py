@@ -17,6 +17,7 @@ from pathlib import Path
 REPORT_CONFIGS: list[tuple[str, str]] = [
     ("Report", "results_log_*.csv"),
     ("Report_eecglobal", "results_log_eecglobal*.csv"),
+    ("Report_unified", "results_log_unified*.csv"),
 ]
 
 

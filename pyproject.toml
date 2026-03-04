@@ -19,4 +19,5 @@ dev = [
 
 [project.scripts]
 google-clicker = "main:main"
+google-clicker-wings = "main_wings:main"
 google-clicker-eec = "main_eecglobal:main"

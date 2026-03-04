@@ -3,7 +3,7 @@ Solve Google reCAPTCHA (robot verification) using Anti-Captcha API.
 Uses RecaptchaV2EnterpriseTaskProxyless per https://anti-captcha.com/apidoc/task-types/RecaptchaV2EnterpriseTaskProxyless
 """
 
-import json
+import logging
 import re
 import time
 from typing import Any
@@ -17,22 +17,10 @@ ANTICAPTCHA_SOLVE_TIMEOUT_SEC = 600
 
 
 def _print_solver_error(solver: Any, api_key: str) -> None:
-    """Print the exact error from the solver and the raw API response when available."""
-    if solver is None:
-        print("    [Anti-Captcha] No solver instance (createTask may have failed early).")
-        return
-    err_code = getattr(solver, "error_code", "") or ""
-    err_str = getattr(solver, "err_string", "") or ""
-    task_id = getattr(solver, "task_id", 0) or 0
-    print("    [Anti-Captcha] Solver error_code:", repr(err_code))
-    print("    [Anti-Captcha] Solver err_string:", repr(err_str))
-    if task_id:
-        raw = _fetch_task_result_raw(api_key, task_id)
-        if raw is not None:
-            print("    [Anti-Captcha] Raw getTaskResult response:", json.dumps(raw, indent=2))
-    if not err_code and not err_str:
-        print("    [Anti-Captcha] (No error_code/err_string set; token was empty or 0.)")
-    print("    [Anti-Captcha] Failed: no token from API (check key, balance, or try again).")
+    """Log the Anti-Captcha error on failure."""
+    err_code = getattr(solver, "error_code", "") or "" if solver else ""
+    err_str = getattr(solver, "err_string", "") or "" if solver else ""
+    print(f"    [Anti-Captcha] ERROR: error_code={repr(err_code)} err_string={repr(err_str)} — no token (check key/balance).")
 
 
 def solve_google_recaptcha(page, api_key: str) -> bool:
@@ -57,7 +45,6 @@ def solve_google_recaptcha(page, api_key: str) -> bool:
         return False
 
     try:
-        print("    [Anti-Captcha] Reading verification page...")
         time.sleep(2)
         html = page.content()
         sitekey = _extract_sitekey(html)
@@ -65,16 +52,12 @@ def solve_google_recaptcha(page, api_key: str) -> bool:
         data_s = _extract_data_s(html)
         if not sitekey and "google.com" in page.url:
             sitekey = GOOGLE_SORRY_SITEKEY
-            print("    [Anti-Captcha] Using fallback site key for Google.")
         if not sitekey:
-            print("    [Anti-Captcha] Failed: could not find reCAPTCHA site key on page.")
             return False
-        print(f"    [Anti-Captcha] Site key found: {sitekey[:20]}...")
 
         website_url = page.url.split("?")[0] if "?" in page.url else page.url
         if not website_url.startswith("http"):
             website_url = "https://www.google.com/sorry/index"
-        print(f"    [Anti-Captcha] Sending task to Anti-Captcha API (timeout {ANTICAPTCHA_SOLVE_TIMEOUT_SEC}s)...")
         token, last_solver = _get_token_from_anticaptcha(
             api_key=api_key,
             website_url=website_url,
@@ -85,16 +68,10 @@ def solve_google_recaptcha(page, api_key: str) -> bool:
         if not token:
             _print_solver_error(last_solver, api_key)
             return False
-        print("    [Anti-Captcha] Token received. Submitting form...")
-
         ok = _inject_token_and_submit(page, token)
-        if ok:
-            print("    [Anti-Captcha] Form submitted.")
-        else:
-            print("    [Anti-Captcha] Could not find form/textarea to submit token.")
         return ok
     except Exception as e:
-        print(f"    [Anti-Captcha] Error: {e}")
+        logging.getLogger("google_clicker").error("[Anti-Captcha] Error: %s", e)
         return False
 
 
@@ -200,7 +177,7 @@ def _get_token_from_anticaptcha(
         if token:
             return (token, solver)
     except Exception as e:
-        print("    [Anti-Captcha] Enterprise solver exception:", e)
+        logging.getLogger("google_clicker").debug("[Anti-Captcha] Enterprise solver exception: %s", e)
 
     # Fallback: RecaptchaV2 (non-Enterprise) with data-s for Google
     try:
@@ -229,7 +206,7 @@ def _get_token_from_anticaptcha(
         if token:
             return (token, solver)
     except Exception as e:
-        print("    [Anti-Captcha] V2 proxyless solver exception:", e)
+        logging.getLogger("google_clicker").debug("[Anti-Captcha] V2 proxyless solver exception: %s", e)
 
     return (None, last_solver)
 
