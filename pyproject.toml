@@ -1,0 +1,22 @@
+[project]
+name = "google-clicker"
+version = "0.1.0"
+description = "Google search automation for SEO ranking and click-through optimization"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright-stealth>=2.0.1",
+    "playwright>=1.58.0",
+    "anticaptchaofficial>=1.0.69",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+google-clicker = "main:main"
+google-clicker-eec = "main_eecglobal:main"
