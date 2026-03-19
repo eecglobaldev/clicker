@@ -10,6 +10,7 @@ Optional: set ANTICAPTCHA_API_KEY to solve robot verification via Anti-Captcha.
 
 import atexit
 import csv
+import glob
 import logging
 import os
 import random
@@ -25,6 +26,7 @@ from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 
+import psutil
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -37,19 +39,20 @@ _shutdown_event = threading.Event()
 
 
 def _signal_handler(signum=None, frame=None):
-    """Handle SIGINT/SIGTERM: kill browsers and force-stop immediately."""
-    print("\nCtrl+C received — killing browsers and stopping...", flush=True)
+    """Handle SIGINT/SIGTERM: kill browsers and allow graceful cleanup."""
+    print("\nSignal received — killing browsers and stopping...", flush=True)
     _shutdown_event.set()
-    import psutil
-    curr_proc = psutil.Process()
-    for child in curr_proc.children(recursive=True):
-        try:
-            name = child.name().lower()
-            if "chrome" in name or "chromium" in name or "node" in name:
-                child.kill()
-        except psutil.NoSuchProcess:
-            pass
-    os._exit(1)
+    try:
+        curr_proc = psutil.Process()
+        for child in curr_proc.children(recursive=True):
+            try:
+                name = child.name().lower()
+                if "chrome" in name or "chromium" in name or "node" in name:
+                    child.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except Exception:
+        pass
 
 
 def _shutdown_requested() -> bool:
@@ -77,16 +80,16 @@ logger = logging.getLogger("google_clicker")
 # Browser profile config
 # ---------------------------------------------------------------------------
 USER_AGENT_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
 ]
 
 VIEWPORT_POOL = [
@@ -170,7 +173,9 @@ class _WorkerFormatter(logging.Formatter):
 
 
 def _setup_logging() -> None:
-    """Configure logging with console and file handlers."""
+    """Configure logging with console and file handlers (idempotent)."""
+    if logger.handlers:
+        return
     logger.setLevel(logging.DEBUG)
 
     fmt = _WorkerFormatter("%(asctime)s  %(levelname)-7s  %(message)s")
@@ -219,6 +224,15 @@ def _create_temp_profile() -> Path:
 
 def get_anticaptcha_api_key() -> str:
     return (os.environ.get("ANTICAPTCHA_API_KEY", "") or ANTICAPTCHA_API_KEY_FALLBACK).strip()
+
+
+def _cleanup_stale_profiles() -> None:
+    """Remove leftover gclicker_profile_* dirs from /tmp on startup."""
+    for d in glob.glob("/tmp/gclicker_profile_*"):
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -271,19 +285,25 @@ def load_keywords(csv_path: Path | str) -> list[tuple[str, str]]:
 
 
 def move_result_log_to_archive() -> None:
-    """Move results_log_unified.csv to Report_unified/ with timestamp."""
+    """Move results_log_unified.csv to Report_unified/ with timestamp.
+    Falls back to deleting the log if the move fails, to prevent the system
+    from getting permanently stuck in an 'all keywords done' state."""
     path = RESULTS_LOG_CSV
     if not path.exists() or path.stat().st_size == 0:
         return
-    RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    archive_name = f"results_log_unified_{timestamp}.csv"
-    dest = RESULTS_ARCHIVE_DIR / archive_name
     try:
+        RESULTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        archive_name = f"results_log_unified_{timestamp}.csv"
+        dest = RESULTS_ARCHIVE_DIR / archive_name
         shutil.move(str(path), str(dest))
-        logger.info("Moved result log to %s (next run will start fresh)", dest)
+        logger.info("Archived result log to %s", dest)
     except Exception as e:
-        logger.warning("Could not move result log to archive: %s", e)
+        logger.warning("Could not move result log to archive: %s. Deleting to allow fresh cycle.", e)
+        try:
+            path.unlink()
+        except Exception as e2:
+            logger.error("Could not delete result log either: %s. Manual intervention needed.", e2)
 
 
 def get_completed_keywords() -> set[tuple[str, str]]:
@@ -435,11 +455,11 @@ def handle_captcha_when_no_results(page, context, wlog) -> bool | SearchOutcome:
 
 def handle_google_verification(page, context, wlog):
     """If on consent or robot verification page, handle it."""
-    time.sleep(random.uniform(2, 4))
+    interruptible_sleep(random.uniform(2, 4))
     if "consent.google" in page.url:
         try:
             page.get_by_role("button", name="Accept all").click(timeout=4000)
-            time.sleep(random.uniform(1.5, 3))
+            interruptible_sleep(random.uniform(1.5, 3))
         except Exception:
             pass
     if "sorry" in page.url or _page_looks_like_verification(page):
@@ -678,26 +698,27 @@ def _click_random_non_target(page, results_list: list[SearchResult], target_doma
     wlog.info("Non-target click: visiting %s", chosen.url[:80])
 
     try:
-        link = page.locator(f"a[href=\"{chosen.url}\"]").first
+        css_safe_url = chosen.url.split("#")[0].split("?")[0]
+        link = page.locator(f"a[href*='{css_safe_url}']").first
         if not link.is_visible(timeout=2000) and chosen.title:
             link = page.locator("a[href^='http']").filter(has_text=chosen.title[:40]).first
         link.scroll_into_view_if_needed(timeout=5000)
-        time.sleep(random.uniform(0.3, 0.8))
+        interruptible_sleep(random.uniform(0.3, 0.8))
         link.click(timeout=5000)
 
         dwell = random.uniform(*NON_TARGET_DWELL_SEC)
         wlog.debug("Dwelling on non-target page for %.1fs...", dwell)
-        time.sleep(dwell * 0.3)
+        interruptible_sleep(dwell * 0.3)
         _scroll_page_naturally(page, dwell * 0.7)
 
         page.go_back(wait_until="domcontentloaded", timeout=15000)
-        time.sleep(random.uniform(1, 3))
+        interruptible_sleep(random.uniform(1, 3))
         wlog.debug("Returned to SERP after non-target click.")
     except Exception as e:
         wlog.debug("Non-target click failed: %s", e)
         try:
             page.go_back(wait_until="domcontentloaded", timeout=10000)
-            time.sleep(random.uniform(1, 2))
+            interruptible_sleep(random.uniform(1, 2))
         except Exception:
             pass
 
@@ -706,7 +727,7 @@ def _dwell_on_target_page(page, wlog) -> None:
     """Dwell on the target page with natural scrolling to avoid bounce detection."""
     dwell = random.uniform(*TARGET_DWELL_SEC)
     wlog.debug("Dwelling on target page for %.1fs...", dwell)
-    time.sleep(dwell * 0.3)
+    interruptible_sleep(dwell * 0.3)
     _scroll_page_naturally(page, dwell * 0.7)
 
 
@@ -718,9 +739,9 @@ def _goto_next_results_page(page, current_page_one_based: int) -> bool:
         new_query = urllib.parse.urlencode(qs, doseq=True)
         next_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
         page.goto(next_url, wait_until="domcontentloaded", timeout=20000)
-        time.sleep(random.uniform(1.5, 3))
+        interruptible_sleep(random.uniform(1.5, 3))
         page.wait_for_selector("#search, #rso, [role='main']", timeout=25_000)
-        time.sleep(random.uniform(1, 2))
+        interruptible_sleep(random.uniform(1, 2))
         return True
     except Exception:
         return False
@@ -783,9 +804,9 @@ def run_one_search(
         return None
 
     search_box.click()
-    time.sleep(random.uniform(0.4, 0.9))
+    interruptible_sleep(random.uniform(0.4, 0.9))
     _type_query_like_human(page, query)
-    time.sleep(random.uniform(0.3, 0.7))
+    interruptible_sleep(random.uniform(0.3, 0.7))
     page.keyboard.press("Enter")
     try:
         page.wait_for_url(
@@ -798,7 +819,7 @@ def run_one_search(
         )
     except Exception:
         pass
-    time.sleep(random.uniform(1, 2))
+    interruptible_sleep(random.uniform(1, 2))
 
     results_selector = "#search, #rso, [role='main']"
     if "sorry" in page.url or _page_looks_like_verification(page):
@@ -808,12 +829,12 @@ def run_one_search(
             return SearchOutcome.REOPEN_NEEDED
         if result is not True:
             return None
-        time.sleep(random.uniform(1, 2))
+        interruptible_sleep(random.uniform(1, 2))
     if "consent.google" in page.url:
         wlog.info("Cookie consent appeared. Accepting...")
         try:
             page.get_by_role("button", name="Accept all").click(timeout=4000)
-            time.sleep(random.uniform(1.5, 3))
+            interruptible_sleep(random.uniform(1.5, 3))
         except Exception:
             pass
     max_verification_retries = 3
@@ -828,10 +849,10 @@ def run_one_search(
                     return SearchOutcome.REOPEN_NEEDED
                 if result is not True:
                     return None
-                time.sleep(random.uniform(1, 2))
+                interruptible_sleep(random.uniform(1, 2))
                 continue
             return None
-        time.sleep(random.uniform(1, 2))
+        interruptible_sleep(random.uniform(1, 2))
         if _page_looks_like_verification(page):
             wlog.warning("Verification content detected on page. Solving...")
             result = handle_sorry_page(page, context, wlog)
@@ -839,12 +860,12 @@ def run_one_search(
                 return SearchOutcome.REOPEN_NEEDED
             if result is not True:
                 return None
-            time.sleep(random.uniform(1, 2))
+            interruptible_sleep(random.uniform(1, 2))
             continue
         break
     else:
         return None
-    time.sleep(random.uniform(1, 2))
+    interruptible_sleep(random.uniform(1, 2))
 
     for page_num in range(1, MAX_RESULT_PAGES + 1):
         results_list, position_on_page = _extract_results_on_page(page, target_domain)
@@ -853,7 +874,7 @@ def run_one_search(
                 result = handle_captcha_when_no_results(page, context, wlog)
                 if result is SearchOutcome.REOPEN_NEEDED:
                     return SearchOutcome.REOPEN_NEEDED
-                time.sleep(random.uniform(1, 2))
+                interruptible_sleep(random.uniform(1, 2))
                 results_list, position_on_page = _extract_results_on_page(
                     page, target_domain
                 )
@@ -877,9 +898,9 @@ def run_one_search(
             else:
                 try:
                     link_to_click.scroll_into_view_if_needed(timeout=5000)
-                    time.sleep(random.uniform(0.2, 0.5))
+                    interruptible_sleep(random.uniform(0.2, 0.5))
                     link_to_click.click(timeout=5000)
-                    time.sleep(random.uniform(2, 4))
+                    interruptible_sleep(random.uniform(2, 4))
                     # Dwell on target page (NEW: read the page like a real user)
                     _dwell_on_target_page(page, wlog)
                     return (page_num, position_on_page)
@@ -912,6 +933,46 @@ def _launch_browser(p, profile_dir: Path, launch_options: dict, stealth: Stealth
         raise
 
 
+def _safe_relaunch(p, context, profile_dir, launch_options, stealth, wlog):
+    """Close old context (if any) and launch a fresh browser. Returns (context, page)."""
+    try:
+        context.close()
+    except Exception:
+        pass
+    return _launch_browser(p, profile_dir, launch_options, stealth)
+
+
+MAX_RELAUNCH_ATTEMPTS = 10
+RELAUNCH_BACKOFF_SEC = 30
+
+
+def _relaunch_and_ready(p, context, profile_dir, launch_options, stealth, wlog):
+    """Relaunch browser and ensure Google is ready. Returns (context, page).
+    Raises RuntimeError after MAX_RELAUNCH_ATTEMPTS failures."""
+    for attempt in range(1, MAX_RELAUNCH_ATTEMPTS + 1):
+        try:
+            context, page = _safe_relaunch(p, context, profile_dir, launch_options, stealth, wlog)
+        except Exception as e:
+            wlog.error("Browser launch failed (attempt %d/%d): %s", attempt, MAX_RELAUNCH_ATTEMPTS, e)
+            if attempt < MAX_RELAUNCH_ATTEMPTS:
+                if interruptible_sleep(RELAUNCH_BACKOFF_SEC):
+                    raise RuntimeError("Shutdown requested during relaunch backoff")
+                continue
+            raise RuntimeError(f"Failed to launch browser after {MAX_RELAUNCH_ATTEMPTS} attempts") from e
+
+        need_reopen = ensure_google_ready(page, context, wlog)
+        if need_reopen is not SearchOutcome.REOPEN_NEEDED:
+            return context, page
+
+        wlog.warning("Google not ready (attempt %d/%d), retrying in %ds...",
+                      attempt, MAX_RELAUNCH_ATTEMPTS, RELAUNCH_BACKOFF_SEC)
+        if attempt < MAX_RELAUNCH_ATTEMPTS:
+            if interruptible_sleep(RELAUNCH_BACKOFF_SEC):
+                raise RuntimeError("Shutdown requested during relaunch backoff")
+
+    raise RuntimeError(f"Failed to reach Google after {MAX_RELAUNCH_ATTEMPTS} attempts")
+
+
 # ---------------------------------------------------------------------------
 # Worker function (runs in its own thread)
 # ---------------------------------------------------------------------------
@@ -929,7 +990,7 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int) -> None:
         if interruptible_sleep(delay):
             return
 
-    wlog.info("[W%d] Started — %d keywords to process.", worker_id, len(keywords_slice))
+    wlog.info("Started — %d keywords to process.", len(keywords_slice))
 
     profile_dir = _create_temp_profile()
     user_agent = _pick_random_ua()
@@ -948,15 +1009,11 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int) -> None:
     if TIMEZONE_ID is not None:
         launch_options["timezone_id"] = TIMEZONE_ID
 
+    _rl_args = (profile_dir, launch_options, stealth, wlog)
+
     try:
         with sync_playwright() as p:
-            context, page = _launch_browser(p, profile_dir, launch_options, stealth)
-
-            while True:
-                need_reopen = ensure_google_ready(page, context, wlog)
-                if need_reopen is not SearchOutcome.REOPEN_NEEDED:
-                    break
-                context, page = _launch_browser(p, profile_dir, launch_options, stealth)
+            context, page = _relaunch_and_ready(p, None, *_rl_args)
 
             for idx, (query, domain) in enumerate(keywords_slice):
                 if _shutdown_requested():
@@ -974,23 +1031,13 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int) -> None:
                 search_used = query
 
                 if result is SearchOutcome.REOPEN_NEEDED:
-                    wlog.warning("Browser error — retrying keyword...")  
-                    context, page = _launch_browser(p, profile_dir, launch_options, stealth)
-                    while True:
-                        need_reopen = ensure_google_ready(page, context, wlog)
-                        if need_reopen is not SearchOutcome.REOPEN_NEEDED:
-                            break
-                        context, page = _launch_browser(p, profile_dir, launch_options, stealth)
+                    wlog.warning("Browser error — retrying keyword...")
+                    context, page = _relaunch_and_ready(p, context, *_rl_args)
                     result = run_one_search(page, context, query, domain, wlog)
                     search_used = query
                     if result is SearchOutcome.REOPEN_NEEDED:
                         wlog.error("ERROR: Retry also failed. Skipping keyword.")
-                        context, page = _launch_browser(p, profile_dir, launch_options, stealth)
-                        while True:
-                            need_reopen = ensure_google_ready(page, context, wlog)
-                            if need_reopen is not SearchOutcome.REOPEN_NEEDED:
-                                break
-                            context, page = _launch_browser(p, profile_dir, launch_options, stealth)
+                        context, page = _relaunch_and_ready(p, context, *_rl_args)
 
                 if result is not None and result is not SearchOutcome.REOPEN_NEEDED:
                     page_num, pos = result
@@ -1012,22 +1059,12 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int) -> None:
                         )
                     except Exception as e:
                         wlog.error("ERROR: Failed to navigate back to Google: %s. Reopening.", e)
-                        context, page = _launch_browser(p, profile_dir, launch_options, stealth)
-                        while True:
-                            need_reopen = ensure_google_ready(page, context, wlog)
-                            if need_reopen is not SearchOutcome.REOPEN_NEEDED:
-                                break
-                            context, page = _launch_browser(p, profile_dir, launch_options, stealth)
+                        context, page = _relaunch_and_ready(p, context, *_rl_args)
                         continue
                     ver = handle_google_verification(page, context, wlog)
                     if ver is SearchOutcome.REOPEN_NEEDED:
                         wlog.info("Reopening browser...")
-                        context, page = _launch_browser(p, profile_dir, launch_options, stealth)
-                        while True:
-                            need_reopen = ensure_google_ready(page, context, wlog)
-                            if need_reopen is not SearchOutcome.REOPEN_NEEDED:
-                                break
-                            context, page = _launch_browser(p, profile_dir, launch_options, stealth)
+                        context, page = _relaunch_and_ready(p, context, *_rl_args)
 
             wlog.info("All assigned keywords processed.")
             try:
@@ -1041,6 +1078,12 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cycle delay between full keyword list completions
+# ---------------------------------------------------------------------------
+CYCLE_COMPLETE_DELAY_SEC = 60
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -1048,71 +1091,102 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
 
     _setup_logging()
+    _cleanup_stale_profiles()
 
-    keywords = load_keywords(DEFAULT_KEYWORDS_CSV)
-    if not keywords:
-        logger.error("No keywords found in %s", DEFAULT_KEYWORDS_CSV)
-        return
+    cycle = 0
 
-    completed = get_completed_keywords()
-    keywords_to_do = [(kw, d) for kw, d in keywords if (kw, d) not in completed]
-    if not keywords_to_do:
-        logger.info("All keywords already processed (results_log_unified.csv is up to date).")
-        return
+    while not _shutdown_requested():
+        cycle += 1
 
-    logger.info("Loaded %d keywords from %s", len(keywords), DEFAULT_KEYWORDS_CSV.name)
-    if completed:
-        logger.info(
-            "Resuming: %d already done, %d remaining.",
-            len(completed), len(keywords_to_do),
-        )
-    if get_anticaptcha_api_key():
-        logger.info("Anti-Captcha: API key set (auto-solve enabled).")
-    else:
-        logger.warning("Anti-Captcha: no API key (you will need to solve verification manually).")
-
-    # Randomize keyword order per run to avoid sequential pattern detection
-    random.shuffle(keywords_to_do)
-    logger.info("Keyword order randomized for this run.")
-
-    # Split keywords across workers
-    num_workers = min(NUM_WORKERS, len(keywords_to_do))
-    chunk_size = len(keywords_to_do) // num_workers
-    chunks: list[list[tuple[str, str]]] = []
-    for i in range(num_workers):
-        start = i * chunk_size
-        end = start + chunk_size if i < num_workers - 1 else len(keywords_to_do)
-        chunks.append(keywords_to_do[start:end])
-
-    logger.info(
-        "Splitting %d keywords across %d workers: %s",
-        len(keywords_to_do),
-        num_workers,
-        [len(c) for c in chunks],
-    )
-
-    threads: list[threading.Thread] = []
-    for worker_id, chunk in enumerate(chunks, 1):
-        t = threading.Thread(target=worker, args=(chunk, worker_id), daemon=True)
-        threads.append(t)
-
-    for t in threads:
-        t.start()
-
-    # Wait for threads to finish, using a timeout so the main thread
-    # can wake up to process SIGINT/SIGTERM handlers properly.
-    try:
-        while any(t.is_alive() for t in threads):
-            if _shutdown_requested():
+        # --- Load keywords ---
+        keywords = load_keywords(DEFAULT_KEYWORDS_CSV)
+        if not keywords:
+            logger.error("No keywords found in %s. Retrying in 60s...", DEFAULT_KEYWORDS_CSV)
+            if interruptible_sleep(60):
                 break
-            for t in threads:
-                t.join(timeout=0.5)
-    except KeyboardInterrupt:
-        _signal_handler()
+            continue
 
-    if not _shutdown_requested():
-        logger.info("Done. All workers finished.")
-        move_result_log_to_archive()
+        # --- Determine remaining work ---
+        completed = get_completed_keywords()
+        keywords_to_do = [(kw, d) for kw, d in keywords if (kw, d) not in completed]
+
+        if not keywords_to_do:
+            logger.info(
+                "All %d keywords processed. Archiving log and starting fresh cycle.",
+                len(keywords),
+            )
+            move_result_log_to_archive()
+            # Brief pause before starting the next full cycle
+            if interruptible_sleep(CYCLE_COMPLETE_DELAY_SEC):
+                break
+            continue
+
+        logger.info(
+            "=== Cycle %d: %d remaining of %d total ===",
+            cycle, len(keywords_to_do), len(keywords),
+        )
+        if completed:
+            logger.info("Resuming: %d already done.", len(completed))
+
+        if get_anticaptcha_api_key():
+            logger.info("Anti-Captcha: API key set (auto-solve enabled).")
+        else:
+            logger.warning("Anti-Captcha: no API key (you will need to solve verification manually).")
+
+        # Randomize keyword order per cycle to avoid sequential pattern detection
+        random.shuffle(keywords_to_do)
+
+        # Split keywords across workers
+        num_workers = min(NUM_WORKERS, len(keywords_to_do))
+        chunk_size = len(keywords_to_do) // num_workers
+        chunks: list[list[tuple[str, str]]] = []
+        for i in range(num_workers):
+            start = i * chunk_size
+            end = start + chunk_size if i < num_workers - 1 else len(keywords_to_do)
+            chunks.append(keywords_to_do[start:end])
+
+        logger.info(
+            "Splitting %d keywords across %d workers: %s",
+            len(keywords_to_do),
+            num_workers,
+            [len(c) for c in chunks],
+        )
+
+        threads: list[threading.Thread] = []
+        for worker_id, chunk in enumerate(chunks, 1):
+            t = threading.Thread(target=worker, args=(chunk, worker_id), daemon=True)
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+
+        # Wait for threads to finish, waking periodically for signal handling
+        try:
+            while any(t.is_alive() for t in threads):
+                if _shutdown_requested():
+                    break
+                for t in threads:
+                    t.join(timeout=0.5)
+        except KeyboardInterrupt:
+            _signal_handler()
+
+        if _shutdown_requested():
+            break
+
+        # Check if all keywords are now done after this cycle
+        completed_now = get_completed_keywords()
+        all_keywords_set = set(keywords)
+        if all_keywords_set.issubset(completed_now):
+            logger.info("Cycle %d complete. All %d keywords processed. Archiving.", cycle, len(keywords))
+            move_result_log_to_archive()
+            # Brief pause before starting the next full cycle
+            if interruptible_sleep(CYCLE_COMPLETE_DELAY_SEC):
+                break
+        else:
+            remaining = len(all_keywords_set - completed_now)
+            logger.info("Cycle %d finished. %d keywords remain for next iteration.", cycle, remaining)
+
+    logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
