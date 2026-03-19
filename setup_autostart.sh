@@ -78,21 +78,20 @@ SERVICEEOF
 
 echo "Created service file: $SERVICE_FILE"
 
-# --- Enable and start ---
+# --- Enable autostart ---
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME.service"
-systemctl --user start "$SERVICE_NAME.service"
 
 echo ""
 echo "=== Done ==="
 echo ""
-echo "Service is now RUNNING and will auto-start on login."
+echo "Service is ENABLED and will auto-start on next login."
 echo ""
+echo "To start it now:  systemctl --user start $SERVICE_NAME"
+echo ""
+echo "Other commands:"
 echo "  Status:   systemctl --user status $SERVICE_NAME"
 echo "  Logs:     journalctl --user -u $SERVICE_NAME -f"
 echo "  Stop:     systemctl --user stop $SERVICE_NAME"
 echo "  Restart:  systemctl --user restart $SERVICE_NAME"
 echo "  Disable:  systemctl --user disable $SERVICE_NAME"
-echo ""
-
-systemctl --user status "$SERVICE_NAME.service" --no-pager
