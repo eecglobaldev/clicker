@@ -62,7 +62,7 @@ ExecStart=$SCRIPT_DIR/run_forever.sh
 Restart=on-failure
 RestartSec=30
 Environment=DISPLAY=:0
-Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$(dirname "$UV_PATH"):$HOME/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NUM_WORKERS=2
 
 KillMode=control-group
