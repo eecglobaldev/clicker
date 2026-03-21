@@ -38,10 +38,8 @@ from anticaptcha_solver import solve_google_recaptcha
 _shutdown_event = threading.Event()
 
 
-def _signal_handler(signum=None, frame=None):
-    """Handle SIGINT/SIGTERM: kill browsers and allow graceful cleanup."""
-    print("\nSignal received — killing browsers and stopping...", flush=True)
-    _shutdown_event.set()
+def _kill_all_child_browsers():
+    """Kill all Chrome/Chromium/Node child processes of this Python process."""
     try:
         curr_proc = psutil.Process()
         for child in curr_proc.children(recursive=True):
@@ -53,6 +51,13 @@ def _signal_handler(signum=None, frame=None):
                 pass
     except Exception:
         pass
+
+
+def _signal_handler(_signum=None, _frame=None):
+    """Handle SIGINT/SIGTERM: kill browsers and allow graceful cleanup."""
+    print("\nSignal received — killing browsers and stopping...", flush=True)
+    _shutdown_event.set()
+    _kill_all_child_browsers()
 
 
 def _shutdown_requested() -> bool:
@@ -261,27 +266,32 @@ def log_result(keyword: str, domain: str, page_num: int | str, position: int | s
 
 
 def load_keywords(csv_path: Path | str) -> list[tuple[str, str]]:
-    """Load keywords from CSV. Returns list of (keyword, target_domain) tuples."""
+    """Load keywords from CSV. Returns list of (keyword, target_domain) tuples.
+    Returns empty list on any read error (never crashes)."""
     path = Path(csv_path)
     if not path.exists():
         return []
-    keywords: list[tuple[str, str]] = []
-    with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header_skipped = False
-        for row in reader:
-            if not row:
-                continue
-            kw = row[0].strip() if row[0] else ""
-            if not header_skipped and kw.lower() == "keyword":
-                header_skipped = True
-                continue
-            domain = row[1].strip() if len(row) > 1 and row[1] else ""
-            if kw and domain:
-                keywords.append((kw, domain))
-            elif kw and not domain:
-                logger.warning("Skipping keyword without target_domain: %s", kw[:60])
-    return keywords
+    try:
+        keywords: list[tuple[str, str]] = []
+        with path.open(newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header_skipped = False
+            for row in reader:
+                if not row:
+                    continue
+                kw = row[0].strip() if row[0] else ""
+                if not header_skipped and kw.lower() == "keyword":
+                    header_skipped = True
+                    continue
+                domain = row[1].strip() if len(row) > 1 and row[1] else ""
+                if kw and domain:
+                    keywords.append((kw, domain))
+                elif kw and not domain:
+                    logger.warning("Skipping keyword without target_domain: %s", kw[:60])
+        return keywords
+    except Exception as e:
+        logger.error("Failed to read keywords CSV %s: %s", path, e)
+        return []
 
 
 def move_result_log_to_archive() -> None:
@@ -307,25 +317,30 @@ def move_result_log_to_archive() -> None:
 
 
 def get_completed_keywords() -> set[tuple[str, str]]:
-    """Return set of (keyword, target_domain) pairs already logged."""
+    """Return set of (keyword, target_domain) pairs already logged.
+    Returns empty set on any read error (never crashes)."""
     path = RESULTS_LOG_CSV
     if not path.exists() or path.stat().st_size == 0:
         return set()
-    completed: set[tuple[str, str]] = set()
-    with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        first = True
-        for row in reader:
-            if not row:
-                continue
-            if first and str(row[0]).strip().lower() == "keyword":
-                first = False
-                continue
-            kw = str(row[0]).strip()
-            domain = str(row[1]).strip() if len(row) > 1 else ""
-            if kw and domain:
-                completed.add((kw, domain))
-    return completed
+    try:
+        completed: set[tuple[str, str]] = set()
+        with path.open(newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            first = True
+            for row in reader:
+                if not row:
+                    continue
+                if first and str(row[0]).strip().lower() == "keyword":
+                    first = False
+                    continue
+                kw = str(row[0]).strip()
+                domain = str(row[1]).strip() if len(row) > 1 else ""
+                if kw and domain:
+                    completed.add((kw, domain))
+        return completed
+    except Exception as e:
+        logger.warning("Could not read results log %s: %s. Treating as empty.", path, e)
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -919,14 +934,31 @@ def run_one_search(
 # ---------------------------------------------------------------------------
 # Browser launch
 # ---------------------------------------------------------------------------
+def _close_extra_pages(context, keep_page):
+    """Close all pages in the context except keep_page."""
+    try:
+        for pg in context.pages:
+            if pg != keep_page:
+                try:
+                    pg.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _launch_browser(p, profile_dir: Path, launch_options: dict, stealth: Stealth):
-    """Launch persistent context and return (context, page)."""
+    """Launch persistent context with exactly one page. Returns (context, page)."""
     try:
         context = p.chromium.launch_persistent_context(str(profile_dir), **launch_options)
         context.set_default_timeout(DEFAULT_OPERATION_TIMEOUT_MS)
         context.set_default_navigation_timeout(DEFAULT_OPERATION_TIMEOUT_MS)
         stealth.apply_stealth_sync(context)
-        page = context.new_page()
+        page = context.pages[0] if context.pages else context.new_page()
+        # Close any extra pages/tabs that opened on launch
+        _close_extra_pages(context, page)
+        # Auto-close any new tabs/popups that sites try to open
+        context.on("page", lambda new_page: new_page.close())
         return context, page
     except Exception as e:
         logger.error("Failed to launch browser: %s", e)
@@ -1089,6 +1121,7 @@ CYCLE_COMPLETE_DELAY_SEC = 60
 def main() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+    atexit.register(_kill_all_child_browsers)
 
     _setup_logging()
     _cleanup_stale_profiles()

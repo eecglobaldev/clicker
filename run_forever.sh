@@ -35,9 +35,14 @@ _cleanup() {
 }
 trap _cleanup INT TERM HUP
 
-# --- Kill orphan Chrome processes from previous crashed runs ---
+# --- Kill orphan Chrome/Playwright processes from previous crashed runs ---
 _kill_orphan_browsers() {
+  # Kill Chrome instances launched with our temp profile dirs
   pkill -f 'gclicker_profile_' 2>/dev/null || true
+  # Kill any leftover Playwright node processes
+  pkill -f 'playwright.*run-driver' 2>/dev/null || true
+  # Clean up stale temp profile dirs
+  rm -rf /tmp/gclicker_profile_* 2>/dev/null || true
 }
 
 echo "[$(date -Iseconds)] run_forever.sh started (timeout=${RUN_TIMEOUT_SEC}s, delay=${RESTART_DELAY}s)"
@@ -79,11 +84,9 @@ while true; do
     exit 0
   fi
 
-  # --- Fatal config errors: don't spin-loop on these ---
-  if [[ $EXIT_CODE -eq 126 ]] || [[ $EXIT_CODE -eq 127 ]]; then
-    echo "[$(date -Iseconds)] FATAL: command not found/executable (code $EXIT_CODE). Stopping."
-    exit "$EXIT_CODE"
-  fi
+  # --- Command not found (126/127): likely snap/uv not ready yet on boot ---
+  # Don't exit permanently — fall through to rapid crash detection which
+  # will escalate the delay until snap is ready.
 
   # --- Timeout (5-hour cycle): restart immediately, reset crash counter ---
   if [[ $EXIT_CODE -eq 124 ]] || [[ $EXIT_CODE -eq 137 ]]; then

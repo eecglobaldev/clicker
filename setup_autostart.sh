@@ -59,7 +59,7 @@ PartOf=graphical-session.target
 Type=exec
 WorkingDirectory=$SCRIPT_DIR
 ExecStart=$SCRIPT_DIR/run_forever.sh
-Restart=on-failure
+Restart=always
 RestartSec=30
 Environment=DISPLAY=:0
 Environment=PATH=$(dirname "$UV_PATH"):$HOME/.local/bin:/snap/bin:/usr/local/bin:/usr/bin:/bin
