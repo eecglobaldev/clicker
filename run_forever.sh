@@ -58,7 +58,7 @@ while true; do
   START_TIME=$(date +%s)
 
   # --kill-after=60: if SIGINT doesn't kill the process within 60s, send SIGKILL
-  timeout --foreground --signal=INT --kill-after=60 "$RUN_TIMEOUT_SEC" uv run main.py
+  timeout --foreground --signal=INT --kill-after=60 "$RUN_TIMEOUT_SEC" uv run main_v2.py
   EXIT_CODE=$?
 
   END_TIME=$(date +%s)
