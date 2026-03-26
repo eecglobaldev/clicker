@@ -66,7 +66,7 @@ class Config:
     verification_wait_timeout_ms: int = 120_000
 
     # Captcha
-    anticaptcha_api_key: str = ""
+    anticaptcha_api_key: str = "64bd9cd5c306974febf3847e0dab53c4"
     anticaptcha_max_attempts: int = 3
     anticaptcha_retry_delay: tuple[float, float] = (5.0, 10.0)
     sorry_page_max_solve_cycles: int = 3
@@ -111,7 +111,7 @@ class Config:
     def from_env() -> "Config":
         return Config(
             num_workers=int(os.environ.get("NUM_WORKERS", "2")),
-            anticaptcha_api_key=os.environ.get("ANTICAPTCHA_API_KEY", "").strip(),
+            anticaptcha_api_key=(os.environ.get("ANTICAPTCHA_API_KEY", "") or "64bd9cd5c306974febf3847e0dab53c4").strip(),
         )
 
 
