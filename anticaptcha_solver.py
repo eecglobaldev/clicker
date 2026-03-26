@@ -12,8 +12,8 @@ from typing import Any
 GOOGLE_SORRY_SITEKEY = "6LfwHekUAAAAAPBMRMUvw_bQySVjvV4W1oW7gJKp"
 
 # Timeout for Anti-Captcha to solve a single task (seconds).
-# The SDK default is 300s (5 min); we increase to 600s (10 min) for hard captchas.
-ANTICAPTCHA_SOLVE_TIMEOUT_SEC = 600
+# Captcha solving can take 5-15 minutes on hard captchas.
+ANTICAPTCHA_SOLVE_TIMEOUT_SEC = 900  # 15 min
 
 
 def _print_solver_error(solver: Any, api_key: str) -> None:

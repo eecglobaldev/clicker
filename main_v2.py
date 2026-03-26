@@ -60,23 +60,23 @@ class Config:
     num_workers: int = 2
     worker_stagger_delay: tuple[float, float] = (15.0, 45.0)
 
-    # Timeouts
-    keyword_timeout_sec: float = 600.0  # 10 min per keyword max
-    default_operation_timeout_ms: int = 90_000
-    verification_wait_timeout_ms: int = 120_000
+    # Timeouts (tuned for slower/older systems)
+    keyword_timeout_sec: float = 1200.0  # 20 min per keyword max
+    default_operation_timeout_ms: int = 180_000  # 3 min per Playwright op
+    verification_wait_timeout_ms: int = 180_000
 
-    # Captcha
+    # Captcha (generous timeouts — solving can take 5-15 min)
     anticaptcha_api_key: str = "64bd9cd5c306974febf3847e0dab53c4"
     anticaptcha_max_attempts: int = 3
-    anticaptcha_retry_delay: tuple[float, float] = (5.0, 10.0)
+    anticaptcha_retry_delay: tuple[float, float] = (10.0, 20.0)
     sorry_page_max_solve_cycles: int = 3
-    post_submit_wait: tuple[float, float] = (5.0, 8.0)
-    post_captcha_wait_max_sec: float = 900.0
-    captcha_check_interval_sec: float = 60.0
-    one_off_wait_for_results_sec: float = 90.0
-    one_off_check_interval_sec: float = 5.0
-    captcha_max_per_cycle: int = 30
-    captcha_consecutive_threshold: int = 5
+    post_submit_wait: tuple[float, float] = (8.0, 15.0)
+    post_captcha_wait_max_sec: float = 1200.0  # 20 min wait after solve
+    captcha_check_interval_sec: float = 90.0
+    one_off_wait_for_results_sec: float = 120.0
+    one_off_check_interval_sec: float = 10.0
+    captcha_max_per_cycle: int = 50
+    captcha_consecutive_threshold: int = 8
     captcha_cooldown_sec: float = 1800.0  # 30 min
 
     # Delays
@@ -92,11 +92,11 @@ class Config:
     session_break_max_keywords: int = 30
     session_break_duration: tuple[float, float] = (120.0, 300.0)  # 2-5 min
 
-    # Browser
+    # Browser (less aggressive restarts for slow systems)
     max_result_pages: int = 50
     max_relaunch_attempts: int = 10
-    relaunch_backoff_sec: float = 30.0
-    profile_refresh_interval: int = 50  # keywords
+    relaunch_backoff_sec: float = 60.0  # wait longer between relaunch attempts
+    profile_refresh_interval: int = 100  # less frequent profile refresh
 
     # Resource management
     memory_limit_mb: int = 4096
@@ -535,13 +535,19 @@ def _check_anticaptcha_balance(api_key: str) -> float | None:
 # Health checks
 # ---------------------------------------------------------------------------
 def _browser_is_healthy(page, wlog) -> bool:
-    """Check if browser page is still responsive."""
+    """Check if browser page is still responsive. Generous timeout for slow systems."""
     try:
-        result = page.evaluate("1 + 1", timeout=5000)
+        result = page.evaluate("1 + 1", timeout=30_000)
         return result == 2
     except Exception:
-        wlog.warning("Browser health check failed.")
-        return False
+        # Retry once before declaring unhealthy — slow systems may need a second chance
+        try:
+            time.sleep(3)
+            result = page.evaluate("1 + 1", timeout=30_000)
+            return result == 2
+        except Exception:
+            wlog.warning("Browser health check failed (after retry).")
+            return False
 
 
 def _wait_for_network(wlog, timeout_sec: float = 300, check_interval: float = 10) -> bool:
@@ -1009,7 +1015,7 @@ def _ensure_google_ready(page, context, config: Config, wlog):
         page.goto(
             "https://www.google.com",
             wait_until="domcontentloaded",
-            timeout=20000,
+            timeout=60000,
         )
     except Exception as e:
         wlog.error("Failed to load Google: %s", e)
@@ -1162,25 +1168,25 @@ def _click_random_non_target(page, results: list[SearchResult], target_domain: s
     try:
         css_safe_url = chosen.url.split("#")[0].split("?")[0]
         link = page.locator(f"a[href*='{css_safe_url}']").first
-        if not link.is_visible(timeout=2000) and chosen.title:
+        if not link.is_visible(timeout=5000) and chosen.title:
             link = page.locator("a[href^='http']").filter(has_text=chosen.title[:40]).first
 
         _move_mouse_to_element(page, link)
-        link.scroll_into_view_if_needed(timeout=5000)
+        link.scroll_into_view_if_needed(timeout=15000)
         interruptible_sleep(random.uniform(0.3, 0.8))
-        link.click(timeout=5000)
+        link.click(timeout=15000)
 
         dwell = random.uniform(*config.non_target_dwell)
         wlog.debug("Dwelling on non-target for %.1fs...", dwell)
         interruptible_sleep(dwell * 0.3)
         _scroll_page_naturally(page, dwell * 0.7)
 
-        page.go_back(wait_until="domcontentloaded", timeout=15000)
+        page.go_back(wait_until="domcontentloaded", timeout=30000)
         interruptible_sleep(random.uniform(1, 3))
     except Exception as e:
         wlog.debug("Non-target click failed: %s", e)
         try:
-            page.go_back(wait_until="domcontentloaded", timeout=10000)
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
             interruptible_sleep(random.uniform(1, 2))
         except Exception:
             pass
@@ -1217,9 +1223,9 @@ def _goto_next_results_page(page, current_page_one_based: int) -> bool:
         qs["start"] = [str(current_page_one_based * 10)]
         new_query = urllib.parse.urlencode(qs, doseq=True)
         next_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
-        page.goto(next_url, wait_until="domcontentloaded", timeout=20000)
+        page.goto(next_url, wait_until="domcontentloaded", timeout=60000)
         interruptible_sleep(random.uniform(1.5, 3))
-        page.wait_for_selector("#search, #rso, [role='main']", timeout=25_000)
+        page.wait_for_selector("#search, #rso, [role='main']", timeout=60_000)
         interruptible_sleep(random.uniform(1, 2))
         return True
     except Exception:
@@ -1274,7 +1280,7 @@ def run_one_search(
     try:
         page.wait_for_url(
             lambda url: "google.com/search" in url or "sorry" in url or "consent.google" in url,
-            timeout=20_000,
+            timeout=60_000,
         )
     except Exception:
         pass
@@ -1297,7 +1303,7 @@ def run_one_search(
     max_verification_retries = 3
     for _ in range(max_verification_retries):
         try:
-            page.wait_for_selector(results_selector, timeout=25_000)
+            page.wait_for_selector(results_selector, timeout=60_000)
         except Exception:
             if _page_looks_like_verification(page):
                 wlog.warning("Verification page detected. Handling...")
@@ -1374,7 +1380,7 @@ def run_one_search(
                                 f"https://www.google.com/search?q={urllib.parse.quote(query)}"
                                 f"&start={(page_num - 1) * 10}",
                                 wait_until="domcontentloaded",
-                                timeout=20000,
+                                timeout=60000,
                             )
                             interruptible_sleep(random.uniform(1, 2))
                         except Exception:
@@ -1400,9 +1406,9 @@ def run_one_search(
                         wlog.info("Target only found as ad links, trying next page.")
                     else:
                         _move_mouse_to_element(page, link_to_click)
-                        link_to_click.scroll_into_view_if_needed(timeout=5000)
+                        link_to_click.scroll_into_view_if_needed(timeout=15000)
                         interruptible_sleep(random.uniform(0.2, 0.5))
-                        link_to_click.click(timeout=5000)
+                        link_to_click.click(timeout=15000)
                         interruptible_sleep(random.uniform(2, 4))
                         _dwell_on_target(page, config, wlog)
                         _track_zero_results(True, wlog)
@@ -1688,7 +1694,7 @@ def worker(keywords_slice: list[tuple[str, str]], worker_id: int, config: Config
 
                         # Navigate back to Google for next keyword
                         try:
-                            page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=20000)
+                            page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=60000)
                         except Exception as e:
                             wlog.error("Failed to navigate to Google: %s. Reopening.", e)
                             context, page = _relaunch_and_ready(
